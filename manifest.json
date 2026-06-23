@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Nurture",
+  "version": "0.1.0",
+  "description": "Auto-warm YouTube accounts: browse, like, comment by niche. 1 Chrome profile = 1 account. 6-layer anti-ban.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "YouTube Nurture",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "js": [
+        "lib/store.js",
+        "lib/niches.js",
+        "lib/templates.js",
+        "lib/human.js",
+        "lib/antiBan.js",
+        "content/helpers.js",
+        "content/detector.js",
+        "content/executor.js"
+      ],
+      "css": [],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

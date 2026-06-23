@@ -1,0 +1,13 @@
+{
+  "name": "nuoi-youtube",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node tests/run-all.js",
+    "test:lib": "node tests/run-all.js --lib",
+    "test:sw": "node tests/run-all.js --sw",
+    "test:smoke": "node tests/smoke.js"
+  },
+  "devDependencies": {}
+}

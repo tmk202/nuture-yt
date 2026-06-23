@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Nurture</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>YouTube Nurture</h1>
+      <p class="subtitle">Auto warm-up via competitor channels</p>
+    </header>
+
+    <section class="status" id="status-section">
+      <div class="status-row">
+        <span class="label">Status</span>
+        <span class="value" id="status-running">—</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Primary niche</span>
+        <span class="value" id="status-niche">—</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Channels</span>
+        <span class="value" id="status-channels">—</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Video pool</span>
+        <span class="value" id="status-seeds">—</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Account age</span>
+        <span class="value" id="status-age">—</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Active hours</span>
+        <span class="value" id="status-hours">—</span>
+      </div>
+      <div class="gate" id="gate-info">—</div>
+    </section>
+
+    <section class="profile-section" id="profile-section">
+      <div class="section-header">
+        <h2>Chrome profile <span id="profile-status" class="profile-status profile-status--unset">not set</span></h2>
+      </div>
+      <p class="hint">Each Chrome profile = 1 YouTube account. The orchestrator script (<code>nurture-all.sh</code>) uses this ID to switch profiles when one hits its daily cap.</p>
+      <div class="form-row profile-row">
+        <input type="text" id="profile-id" placeholder="yt-1, alice-sg, acc-bob..." maxlength="64" />
+        <button id="btn-save-profile" class="btn btn-secondary">Save</button>
+        <span id="profile-result" class="profile-result"></span>
+      </div>
+    </section>
+
+    <section class="stats">
+      <h2>Today</h2>
+      <div class="stat-grid">
+        <div class="stat"><div class="num" id="stat-watch">0</div><div class="lbl">watch</div></div>
+        <div class="stat"><div class="num" id="stat-like">0</div><div class="lbl">like</div></div>
+        <div class="stat"><div class="num" id="stat-comment">0</div><div class="lbl">comment</div></div>
+        <div class="stat"><div class="num" id="stat-sub">0</div><div class="lbl">sub</div></div>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button id="btn-toggle" class="btn btn-primary">▶ Start nurturing</button>
+      <button id="btn-refresh-all" class="btn btn-secondary">🔄 Refresh all</button>
+    </section>
+
+    <section class="channels-section">
+      <div class="section-header">
+        <h2>Competitor channels <span id="channel-count" class="count-badge">0/10</span></h2>
+      </div>
+      <div id="channel-list" class="channel-list">
+        <div class="empty-state">No channels yet. Add 5–10 competitors below.</div>
+      </div>
+    </section>
+
+    <section class="add-section">
+      <div id="add-hint" class="add-hint" style="display:none"></div>
+      <details open>
+        <summary>➕ Add channel</summary>
+        <div class="form-stack">
+          <input type="text" id="channel-url" placeholder="https://www.youtube.com/@handle" />
+          <div class="form-row form-row--compact">
+            <select id="niche-select">
+              <option value="__none__" selected>No niche (default)</option>
+              <option value="">Auto-detect from videos</option>
+            </select>
+            <button id="btn-add" class="btn btn-secondary">Add this channel</button>
+          </div>
+        </div>
+        <div id="add-result" class="detect-result"></div>
+      </details>
+    </section>
+
+    <section class="niches-section">
+      <details>
+        <summary>🎯 Niches <span id="niche-count" class="count-badge">0</span></summary>
+        <p class="hint">Default niches are pre-defined. Add your own label-only niches for organizing channels — no keywords needed. Hidden defaults can be restored.</p>
+        <div id="niche-list" class="niche-list"></div>
+        <details class="add-niche-form">
+          <summary>+ Add niche (label only)</summary>
+          <div class="form-row">
+            <label>ID (lowercase, no spaces)</label>
+            <input type="text" id="new-niche-id" placeholder="pickleball" />
+          </div>
+          <div class="form-row">
+            <label>Label (display name)</label>
+            <input type="text" id="new-niche-label" placeholder="Pickleball" />
+          </div>
+          <div class="form-row">
+            <button id="btn-add-niche" class="btn btn-secondary">Add niche</button>
+            <span id="add-niche-result" class="niche-result"></span>
+          </div>
+        </details>
+      </details>
+    </section>
+
+    <section class="add-section">
+      <details>
+        <summary>📋 Bulk import (paste URLs, one per line)</summary>
+        <textarea id="bulk-urls" rows="4" placeholder="https://www.youtube.com/@channel1&#10;https://www.youtube.com/@channel2&#10;https://www.youtube.com/@channel3"></textarea>
+        <div class="form-row">
+          <button id="btn-bulk-import" class="btn btn-secondary">Import all</button>
+          <button id="btn-clear-channels" class="btn btn-danger">Clear all channels</button>
+        </div>
+        <div id="bulk-result" class="detect-result"></div>
+      </details>
+    </section>
+
+    <section class="config">
+      <details>
+        <summary>Settings</summary>
+        <div class="form-row">
+          <label>Active hours</label>
+          <div class="inline">
+            <input type="number" id="hour-start" min="0" max="23" value="8" />
+            <span>—</span>
+            <input type="number" id="hour-end" min="0" max="23" value="23" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Max actions/day</label>
+          <input type="number" id="max-actions" min="2" max="50" value="20" />
+        </div>
+        <div class="form-row">
+          <button id="btn-save-settings" class="btn btn-secondary">Save settings</button>
+          <button id="btn-reset" class="btn btn-danger">Reset stats</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="auto-download">
+      <details>
+        <summary>💾 Auto-download log</summary>
+        <p class="hint">Save log to <code>~/Downloads/</code> automatically. After a successful download, the saved chunk is removed from extension storage so it doesn't fill up.</p>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" id="autodl-enabled" />
+            <span>Enable auto-download</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" id="autodl-onarchive" />
+            <span>Download each new archive when log fills up</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" id="autodl-daily" />
+            <span>Scheduled daily dump</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Daily dump hour (0–23, local time)</label>
+          <input type="number" id="autodl-hour" min="0" max="23" value="3" />
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" id="autodl-clear" />
+            <span>Clear from storage after download (recommended)</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <button id="btn-save-autodl" class="btn btn-secondary">Save auto-download settings</button>
+          <button id="btn-trigger-autodl" class="btn btn-secondary">Run now</button>
+        </div>
+        <div id="autodl-status" class="autodl-status"></div>
+      </details>
+    </section>
+
+    <section class="debug">
+      <details id="debug-details">
+        <summary>🔍 Last detect debug log</summary>
+        <div class="debug-actions">
+          <button id="btn-show-log" class="btn btn-tiny">Refresh</button>
+          <button id="btn-copy-log" class="btn btn-tiny">Copy</button>
+          <button id="btn-clear-log" class="btn btn-tiny">Clear</button>
+        </div>
+        <pre id="debug-log" class="debug-log">(no log yet)</pre>
+      </details>
+    </section>
+
+    <section class="activity-section">
+      <details id="activity-details">
+        <summary>📋 Activity log <span id="activity-count" class="count-badge">0</span></summary>
+        <p class="hint">Every action the extension takes is recorded here. Active log keeps the last 500 events. When full, the oldest 200 are auto-archived (max 5 archives). Download archives to keep forever.</p>
+        <div class="filter-row">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="tick">Ticks</button>
+          <button class="filter-btn" data-filter="watch">Watches</button>
+          <button class="filter-btn" data-filter="channel">Channels</button>
+          <button class="filter-btn" data-filter="niche">Niches</button>
+          <button class="filter-btn" data-filter="error">Errors</button>
+        </div>
+        <div class="debug-actions">
+          <button id="btn-refresh-activity" class="btn btn-tiny">Refresh</button>
+          <button id="btn-copy-activity" class="btn btn-tiny">Copy JSON</button>
+          <button id="btn-clear-activity" class="btn btn-tiny">Clear active</button>
+          <button id="btn-download-all" class="btn btn-tiny">Download all (JSON)</button>
+        </div>
+        <div id="activity-log" class="activity-log">(no events yet — start nurturing to see activity)</div>
+        <div id="archive-section" class="archive-section" style="display:none">
+          <h4>📦 Archives <span id="archive-count" class="count-badge">0</span></h4>
+          <div id="archive-list"></div>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      <p>1 Chrome profile = 1 YouTube account. Add 5–10 competitor channels for best results.</p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
