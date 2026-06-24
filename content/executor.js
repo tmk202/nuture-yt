@@ -80,14 +80,23 @@
       // 2. No skippable button — fast-forward the ad by jumping to end of video.
       // YouTube's ad video element is separate; setting <video>.currentTime to a
       // large value causes YouTube to abort the ad and resume real content.
+      //
+      // Safety guard: only fast-forward when the video's duration looks like an
+      // ad (< 90s). Real videos are usually 1–60+ minutes. This prevents the
+      // case where `ad-showing` is briefly still set while YouTube has already
+      // switched to the real video — without this guard, we'd jump the real
+      // video to near its end and the watch would end after ~1 second.
       const v = document.querySelector('video');
-      if (v && Number.isFinite(v.duration) && v.duration > 0) {
+      if (v && Number.isFinite(v.duration) && v.duration > 0 && v.duration < 90) {
         try {
-          // Cap at duration-1s to avoid triggering the "ended" event
           v.currentTime = Math.max(v.duration - 1, v.currentTime + 1);
           console.log(`[nuoi-yt] ad-skip: fast-forwarded unskippable ad to ${v.currentTime.toFixed(1)}s`);
           return true;
         } catch (e) { /* no-op */ }
+      }
+      if (v && v.duration >= 90) {
+        // Looks like the real video, not an ad — don't fast-forward.
+        console.log(`[nuoi-yt] ad-skip: skipping fast-forward (duration ${v.duration.toFixed(0)}s is too long for an ad)`);
       }
       return false;
     } catch (e) {
@@ -129,10 +138,46 @@
         return { ok: false, reason: 'not-logged-in' };
       }
 
-      // 4. Get video info
+      // 4. Get video info. Important: we must wait for any pre-roll ad to clear
+      // before reading the duration — otherwise `.ytp-time-duration` shows the
+      // ad's length (e.g. "0:30") instead of the real video length, and our
+      // watch budget becomes absurdly short.
       const title = YTHelpers.getWatchTitle() || `video ${videoId}`;
       const channelName = YTHelpers.getWatchChannelName() || '';
-      const duration = YTHelpers.getWatchDurationSec() || 300;
+      let duration = 0;
+      // Step 1: Try to skip a pre-roll ad exactly ONCE. After this, we just
+      // wait for the page to settle and read duration — we don't call the
+      // skipper again here, because if YouTube is still transitioning from
+      // the ad to the real video, `ad-showing` class might still be on the
+      // player while the <video> element already has the real video loaded.
+      // handleYouTubeAd has a safety guard to not fast-forward when duration
+      // is too long for an ad, so re-calling is safe, but we still prefer
+      // to keep this loop simple and only skip once.
+      handleYouTubeAd();
+      // Step 2: Poll for the real duration. We give the page up to 12 * 1.5s
+      // = 18s to settle. If a pre-roll ad is unskippable, this is the time
+      // budget for the user to be able to manually skip it.
+      for (let i = 0; i < 12; i++) {
+        await Human.sleep(1500);
+        const candidate = YTHelpers.getWatchDurationSec() || 0;
+        // Real videos are usually >= 30s. We accept the first value that
+        // looks like a real video.
+        if (candidate >= 30) {
+          duration = candidate;
+          break;
+        }
+      }
+      if (duration < 30) {
+        // Still suspicious. Wait longer and try once more.
+        await Human.sleep(3000);
+        duration = YTHelpers.getWatchDurationSec() || 0;
+      }
+      if (duration < 30) {
+        // Last resort: use a safe default. This avoids calculating a tiny
+        // watch budget when an ad was still active at read time.
+        console.warn(`[nuoi-yt] executor: could not read real duration (got ${duration}s) — using fallback 300s`);
+        duration = 300;
+      }
 
       console.log(`[nuoi-yt] executor: "${title.slice(0, 60)}" by ${channelName}, ${duration}s`);
 
@@ -440,16 +485,22 @@
   // Listen messages tu background
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'WATCH') {
+      // Run the watch in the background. We send the final result BOTH ways:
+      //   1. sendResponse() — original mechanism (gets the result to the SW faster)
+      //   2. chrome.runtime.sendMessage(WATCH_DONE) — backup so the SW always
+      //      gets notified even if the tab is closed before sendResponse can be
+      //      delivered (the error "channel closed before a response was
+      //      received" happens otherwise).
       executeWatch(msg)
         .then((result) => {
-          chrome.runtime.sendMessage({ type: 'WATCH_DONE', ...result }).catch(() => {});
-          sendResponse(result);
+          try { chrome.runtime.sendMessage({ type: 'WATCH_DONE', ...result }).catch(() => {}); } catch (_) {}
+          try { sendResponse(result); } catch (_) {}
         })
         .catch((e) => {
-          chrome.runtime.sendMessage({ type: 'WATCH_DONE', ok: false, reason: e.message }).catch(() => {});
-          sendResponse({ ok: false, reason: e.message });
+          try { chrome.runtime.sendMessage({ type: 'WATCH_DONE', ok: false, reason: e.message }).catch(() => {}); } catch (_) {}
+          try { sendResponse({ ok: false, reason: e.message }); } catch (_) {}
         });
-      return true; // async response
+      return true; // async response (channel stays open until sendResponse)
     }
     if (msg.type === 'STOP') {
       _abort = true;
