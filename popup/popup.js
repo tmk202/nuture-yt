@@ -35,12 +35,18 @@ function renderChannels(s) {
     const item = document.createElement('div');
     item.className = 'channel-item';
     const ageText = ch.lastRefresh ? `${Math.round((Date.now() - new Date(ch.lastRefresh).getTime()) / 3600000)}h ago` : 'never';
+    const pendingBadge = ch.pendingSubscribe
+      ? '<span class="niche-tag" style="background:#fce7a4;color:#7c4a00;" title="Will be force-subscribed on next watch from this channel">⏳ pending subscribe</span>'
+      : (ch.subscribedAt
+        ? `<span class="niche-tag" style="background:#d4f4dd;color:#1a6b3a;" title="Subscribed">✓ subscribed</span>`
+        : '');
     item.innerHTML = `
       <div class="channel-row">
         <div class="channel-info">
           <div class="channel-name">${escapeHtml(ch.displayName || ch.handle)}</div>
           <div class="channel-meta">
             <span class="niche-tag">${escapeHtml(ch.niche || '—')}</span>
+            ${pendingBadge}
             <span>${(ch.videos || []).length} videos</span>
             <span>refreshed ${ageText}</span>
             <span>${Math.round((ch.confidence || 0) * 100)}%</span>
@@ -48,6 +54,9 @@ function renderChannels(s) {
         </div>
         <div class="channel-actions">
           <button data-action="refresh" data-id="${ch.id}" title="Re-detect this channel">↻</button>
+          ${ch.pendingSubscribe
+            ? `<button data-action="resubscribe" data-id="${ch.id}" title="Force re-subscribe (will retry on next watch)">↻✓</button>`
+            : ''}
           <button data-action="remove" data-id="${ch.id}" class="remove" title="Remove">✕</button>
         </div>
       </div>
@@ -67,6 +76,18 @@ function renderChannels(s) {
     btn.addEventListener('click', async () => {
       if (!confirm(`Remove this channel?`)) return;
       await chrome.runtime.sendMessage({ type: 'REMOVE_CHANNEL', channelId: btn.dataset.id });
+      setTimeout(render, 500);
+    });
+  });
+  list.querySelectorAll('button[data-action="resubscribe"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await chrome.runtime.sendMessage({ type: 'MARK_PENDING_SUBSCRIBE', channelId: btn.dataset.id });
+      if (res && res.ok) {
+        btn.textContent = '✓';
+      } else {
+        btn.textContent = '!';
+      }
       setTimeout(render, 500);
     });
   });

@@ -142,7 +142,9 @@
 
       _lastAdHandledAt = Date.now();
 
-      // 1. Try clicking a visible Skip Ad button
+      // 1. Try clicking a visible Skip Ad button (works for skippable ads
+      //    after the initial 5s countdown, and for unskippable ads that
+      //    have a "Skip Ad" CTA after YouTube decides to allow skipping).
       const skipSelectors = [
         '.ytp-ad-skip-button',
         '.ytp-ad-skip-button-modern',
@@ -168,26 +170,61 @@
         } catch (e) { /* fall through */ }
       }
 
-      // 2. No skippable button — fast-forward the ad by jumping to end of video.
+      // 2. Unskippable ad: try to find the "Skip" countdown timer and force
+      //    it to its end. YouTube uses `.ytp-ad-skip-button` with a child
+      //    timer for engaged-view ads; once the countdown hits 0, the
+      //    button becomes clickable. We can detect the remaining seconds
+      //    from `.ytp-ad-skip-button-text` or via the button's data attrs.
+      //    When the Skip button exists but is grayed out, we can still try
+      //    clicking it (YouTube may activate it after the countdown even
+      //    if the visual class hasn't updated yet).
+      const skipCountdown = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+      if (skipCountdown) {
+        // Force-click through the disabled state by dispatching a real click
+        // event in the bubble phase, ignoring pointer-events: none.
+        try {
+          skipCountdown.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          console.log(`[nuoi-yt] ad-skip: dispatched click on grayed skip button`);
+          return true;
+        } catch (e) { /* fall through */ }
+      }
+
+      // 3. No skippable button — fast-forward the ad by jumping to end of video.
       // YouTube's ad video element is separate; setting <video>.currentTime to a
       // large value causes YouTube to abort the ad and resume real content.
       //
-      // Safety guard: only fast-forward when the video's duration looks like an
-      // ad (< 90s). Real videos are usually 1–60+ minutes. This prevents the
-      // case where `ad-showing` is briefly still set while YouTube has already
-      // switched to the real video — without this guard, we'd jump the real
-      // video to near its end and the watch would end after ~1 second.
+      // Safety: only fast-forward when we're CONFIDENT this is an ad, not the
+      // real video in a transition window. We use STRONG ad signals — only
+      // DOM elements that are present only when an ad is actually showing:
+      //   - .ytp-ad-player-overlay (the ad card overlay)
+      //   - .ytp-ad-text (the "Sponsored" / "Ad ·" label)
+      //   - .ytp-ad-skip-button / -modern (the skip button)
+      //   - .video-ads (the ad container)
+      //
+      // We deliberately do NOT use the `ad-showing` class on the player
+      // because YouTube keeps that class for a brief moment after the real
+      // video has already loaded (transition window), and if we relied on
+      // it we'd jump the real video to near its end.
       const v = document.querySelector('video');
-      if (v && Number.isFinite(v.duration) && v.duration > 0 && v.duration < 90) {
+      const adUiVisible = !!document.querySelector('.ytp-ad-player-overlay') ||
+                          !!document.querySelector('.ytp-ad-text') ||
+                          !!document.querySelector('.ytp-ad-skip-button') ||
+                          !!document.querySelector('.ytp-ad-skip-button-modern') ||
+                          !!document.querySelector('.video-ads');
+      if (v && Number.isFinite(v.duration) && v.duration > 0 && adUiVisible) {
         try {
-          v.currentTime = Math.max(v.duration - 1, v.currentTime + 1);
-          console.log(`[nuoi-yt] ad-skip: fast-forwarded unskippable ad to ${v.currentTime.toFixed(1)}s`);
+          // Jump to ~0.5s before the end. YouTube aborts the ad when currentTime
+          // approaches duration, and resumes the real video. We avoid jumping
+          // to exactly v.duration because some players treat that as "ended"
+          // and try to play the next video instead of resuming the real one.
+          const target = Math.max(v.duration - 0.5, v.currentTime + 1);
+          v.currentTime = target;
+          console.log(`[nuoi-yt] ad-skip: fast-forwarded unskippable ad to ${v.currentTime.toFixed(1)}s (duration ${v.duration.toFixed(0)}s, adUiVisible=${adUiVisible})`);
           return true;
         } catch (e) { /* no-op */ }
       }
-      if (v && v.duration >= 90) {
-        // Looks like the real video, not an ad — don't fast-forward.
-        console.log(`[nuoi-yt] ad-skip: skipping fast-forward (duration ${v.duration.toFixed(0)}s is too long for an ad)`);
+      if (v && !adUiVisible) {
+        console.log(`[nuoi-yt] ad-skip: skipping fast-forward (ad-showing but no ad UI — likely transition window)`);
       }
       return false;
     } catch (e) {
@@ -209,6 +246,9 @@
     const commentText = opts.commentText || '';
     const doSubscribe = !!opts.subscribe;
     const subscribeChannel = opts.subscribeChannel || '';
+    // forceSubscribe = SW forced this subscribe because the channel was just added
+    // (pendingSubscribe=true). Bypass the 1/day cap up to settings.subscribeBurstPerDay.
+    const forceSubscribe = !!opts.forceSubscribe;
 
     try {
       console.log(`[nuoi-yt] executor: start watch ${videoId}`);
@@ -456,7 +496,10 @@
         const already = (stateNow.history.subscribed || []).some(
           (s) => s.channel && s.channel.toLowerCase() === subscribeChannel.toLowerCase()
         );
-        if (subToday.length === 0 && !already) {
+        const burstCap = Number((stateNow.settings || {}).subscribeBurstPerDay) || 5;
+        // forceSubscribe bypasses the 1/day cap up to burstCap; otherwise legacy 1/day limit.
+        const subLimitOK = forceSubscribe ? subToday.length < burstCap : subToday.length === 0;
+        if (subLimitOK && !already) {
           const r = await YTHelpers.clickSubscribe();
           console.log(`[nuoi-yt] executor: subscribe result=${r}`);
           if (r === 'subscribed') {
@@ -598,6 +641,10 @@
     }
   });
 
-  global.YTExecutor = { executeWatch };
+  global.YTExecutor = {
+    executeWatch,
+    handleYouTubeAd,
+    _resetAdThrottle: () => { _lastAdHandledAt = 0; },
+  };
   console.log('[nuoi-yt] executor loaded');
 })(typeof self !== 'undefined' ? self : this);

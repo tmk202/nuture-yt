@@ -192,6 +192,9 @@ async function addChannelFromDetect({ handle, url, displayName, niche, confidenc
     })),
     addedAt: new Date().toISOString(),
     lastRefresh: new Date().toISOString(),
+    // New competitor channel → auto-subscribe on next watch from this channel.
+    // Cleared by onWatchDone after a successful subscribe.
+    pendingSubscribe: true,
   };
   const updated = [...state.channels, newChannel];
   const primary = Store.computePrimaryNiche(updated);
@@ -340,9 +343,28 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
 
       // Subscribe: 5% ratio + 1/day cap + skip if already subbed + account > 14d
+      // OR forced when the channel was just added (pendingSubscribe=true) — bypass
+      // ratio and 1/day cap up to settings.subscribeBurstPerDay.
       let doSub = false;
       let subChannel = null;
-      if (AntiBan.shouldDo('subscribe', settings) && Store.canComment(state)) {
+      let forceSub = false;
+      const seedChannel = (state.channels || []).find((c) => c.id === seed.channelId);
+      if (seedChannel && seedChannel.pendingSubscribe) {
+        // Forced subscribe for newly added competitor channel
+        const subToday = (state.history.subscribed || []).filter((s) =>
+          Date.now() - new Date(s.subscribedAt).getTime() < 86400000
+        );
+        const burstCap = Number(settings.subscribeBurstPerDay) || 5;
+        const alreadySubbed = (state.history.subscribed || []).some(
+          (s) => s.channel && seedChannel.displayName &&
+                 s.channel.toLowerCase() === seedChannel.displayName.toLowerCase()
+        );
+        if (subToday.length < burstCap && !alreadySubbed && seedChannel.displayName) {
+          doSub = true;
+          forceSub = true;
+          subChannel = seedChannel.displayName;
+        }
+      } else if (AntiBan.shouldDo('subscribe', settings) && Store.canComment(state)) {
         const subToday = (state.history.subscribed || []).filter((s) =>
           Date.now() - new Date(s.subscribedAt).getTime() < 86400000
         );
@@ -371,6 +393,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         commentText,
         subscribe: doSub,
         subscribeChannel: subChannel,
+        forceSubscribe: forceSub,
       });
     } catch (e) {
       await logActivity('error', `Tick error: ${e.message}`, { tickId, stack: (e.stack || '').slice(0, 600) }, 'error');
@@ -393,6 +416,20 @@ function pickSeed(seeds, history, channels, lastPickedChannelId) {
 
   const fresh = seeds.filter((s) => !watched.has(s.videoId) && !liked.has(s.videoId));
   const pool = fresh.length > 0 ? fresh : seeds;
+
+  // 0. PRIORITY: prefer videos from channels the user just added (pendingSubscribe).
+  // We want to force-subscribe to all newly-added competitor channels.
+  if (channels && channels.length > 0) {
+    const pendingChannelIds = new Set(
+      channels.filter((c) => c.pendingSubscribe).map((c) => c.id)
+    );
+    if (pendingChannelIds.size > 0) {
+      const pendingSeeds = pool.filter((s) => s.channelId && pendingChannelIds.has(s.channelId));
+      if (pendingSeeds.length > 0) {
+        return pendingSeeds[Math.floor(Math.random() * pendingSeeds.length)];
+      }
+    }
+  }
 
   // 1. Fresh from different channel
   if (lastPickedChannelId && channels && channels.length > 1) {
@@ -425,7 +462,13 @@ async function openAndWatch(videoId, opts) {
   }
 
   // Per-tab tracking (so multiple parallel watches don't close each other)
-  _activeWatches.set(tab.id, { videoId, startedAt: Date.now(), timeout: null });
+  _activeWatches.set(tab.id, {
+    videoId,
+    startedAt: Date.now(),
+    timeout: null,
+    // Preserve opts for onWatchDone to clear pendingSubscribe on the channel we asked to subscribe to
+    opts: { ...opts },
+  });
   _currentWatchTabId = tab.id; // legacy single-slot for tick()'s busy check
 
   await logActivity('watch_started', `Opened watch tab for ${videoId}`, {
@@ -515,6 +558,35 @@ async function onWatchDone(result) {
       tabId: targetTabId,
       duration: targetEntry ? Date.now() - targetEntry.startedAt : null,
     });
+
+    // If we asked to subscribe to a channel on this watch and the executor
+    // recorded a successful subscribe, clear the channel's pendingSubscribe flag.
+    const opts = targetEntry?.opts || {};
+    if (opts.subscribeChannel) {
+      try {
+        const s2 = await Store.getState();
+        const subbed = (s2.history.subscribed || []).some((s) =>
+          s.channel &&
+          s.channel.toLowerCase() === String(opts.subscribeChannel).toLowerCase()
+        );
+        if (subbed) {
+          const target = String(opts.subscribeChannel).toLowerCase();
+          const updated = (s2.channels || []).map((ch) => {
+            if (ch.pendingSubscribe) {
+              const dn = (ch.displayName || '').toLowerCase();
+              const hh = (ch.handle || '').toLowerCase();
+              if (dn === target || hh === target) {
+                return { ...ch, pendingSubscribe: false, subscribedAt: new Date().toISOString() };
+              }
+            }
+            return ch;
+          });
+          await Store.setState({ channels: updated });
+        }
+      } catch (e) {
+        console.warn('[nuoi-yt] pendingSubscribe clear failed', e);
+      }
+    }
   } else {
     const level = result.reason === 'not-logged-in' ? 'error' : 'warn';
     await logActivity('watch_failed', `Watch failed (${result.reason || 'unknown'})`, {
@@ -890,6 +962,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     refreshOneChannel(msg.channelId).then((res) => sendResponse(res));
     return true;
   }
+  if (msg.type === 'MARK_PENDING_SUBSCRIBE') {
+    // Re-flag a channel as pendingSubscribe so the next watch from it will force-subscribe.
+    // Used when the auto-subscribe failed or the user wants to re-trigger.
+    (async () => {
+      try {
+        const state = await Store.getState();
+        const updated = (state.channels || []).map((ch) =>
+          ch.id === msg.channelId
+            ? { ...ch, pendingSubscribe: true, subscribedAt: undefined }
+            : ch
+        );
+        await Store.setState({ channels: updated });
+        await logActivity('channel_flagged_resubscribe', `Re-flagged channel for force-subscribe`, {
+          channelId: msg.channelId,
+        });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, err: e.message });
+      }
+    })();
+    return true;
+  }
   if (msg.type === 'REMOVE_CHANNEL') {
     removeChannel(msg.channelId).then(sendResponse);
     return true;
@@ -994,7 +1088,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         let doSub = false;
         let subChannel = null;
-        if (AntiBan.shouldDo('subscribe', settings) && Store.canComment(state)) {
+        let forceSub = false;
+        const seedChannel = (state.channels || []).find((c) => c.id === seed.channelId);
+        if (seedChannel && seedChannel.pendingSubscribe) {
+          const subToday = (state.history.subscribed || []).filter((s) =>
+            Date.now() - new Date(s.subscribedAt).getTime() < 86400000
+          );
+          const burstCap = Number(settings.subscribeBurstPerDay) || 5;
+          const alreadySubbed = (state.history.subscribed || []).some(
+            (s) => s.channel && seedChannel.displayName &&
+                   s.channel.toLowerCase() === seedChannel.displayName.toLowerCase()
+          );
+          if (subToday.length < burstCap && !alreadySubbed && seedChannel.displayName) {
+            doSub = true;
+            forceSub = true;
+            subChannel = seedChannel.displayName;
+          }
+        } else if (AntiBan.shouldDo('subscribe', settings) && Store.canComment(state)) {
           const subToday = (state.history.subscribed || []).filter((s) =>
             Date.now() - new Date(s.subscribedAt).getTime() < 86400000
           );
@@ -1013,7 +1123,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           title: seed.title,
           channel: seed.channelName,
           source: seed.source,
-          actions: { like: doLike, comment: doComment, subscribe: doSub },
+          actions: { like: doLike, comment: doComment, subscribe: doSub, forceSubscribe: forceSub },
           commentText: commentText ? commentText.slice(0, 60) : null,
         });
 
@@ -1024,6 +1134,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           commentText,
           subscribe: doSub,
           subscribeChannel: subChannel,
+          forceSubscribe: forceSub,
           quick: !!msg.quick,
         });
         const after = await Store.getState();

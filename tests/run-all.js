@@ -14,7 +14,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 const groups = {
   lib: ['test-human.js', 'test-templates-antiBan.js', 'test-niches.js', 'test-store.js'],
-  sw: ['test-service-worker.js', 'test-integration.js'],
+  sw: ['test-service-worker.js', 'test-integration.js', 'test-executor-ad-skip.js'],
 };
 
 const arg = process.argv[2] || 'all';

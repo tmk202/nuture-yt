@@ -165,6 +165,43 @@ group('service-worker pure helpers', () => {
     const pick = pickSeed(seeds, history, [], null);
     assert.equal(pick.videoId, 'a'); // OK to re-pick if no fresh
   });
+
+  test('pickSeed prefers pendingSubscribe channels (auto-subscribe priority)', () => {
+    const seeds = [
+      { videoId: 'a1', channelId: 'c1' },
+      { videoId: 'a2', channelId: 'c1' },
+      { videoId: 'b1', channelId: 'c2' },
+      { videoId: 'b2', channelId: 'c2' },
+    ];
+    const channels = [
+      { id: 'c1', pendingSubscribe: false },
+      { id: 'c2', pendingSubscribe: true },  // newly added → should be picked
+    ];
+    // Run 50 times — ALL picks should be from c2 (the pending channel)
+    let c2Count = 0, c1Count = 0;
+    for (let i = 0; i < 50; i++) {
+      const pick = pickSeed(seeds, { watched: [], liked: [] }, channels, 'c1');
+      if (pick && pick.channelId === 'c2') c2Count++;
+      else c1Count++;
+    }
+    assert.equal(c1Count, 0, `expected 0 picks from c1, got ${c1Count}`);
+    assert.equal(c2Count, 50, `expected 50 picks from c2, got ${c2Count}`);
+  });
+
+  test('pickSeed returns null when no pending channel has fresh seeds', () => {
+    const seeds = [
+      { videoId: 'a', channelId: 'c1' },     // not pending
+      { videoId: 'b', channelId: 'c2' },     // pending, but watched
+    ];
+    const channels = [
+      { id: 'c1', pendingSubscribe: false },
+      { id: 'c2', pendingSubscribe: true },
+    ];
+    const history = { watched: [{ videoId: 'b' }], liked: [] };
+    // Should still return a pick (fall through to round-robin or random)
+    const pick = pickSeed(seeds, history, channels, null);
+    assert.truthy(pick, 'expected a pick even when no pending fresh');
+  });
 });
 
 if (require.main === module) run();
