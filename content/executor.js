@@ -110,6 +110,9 @@
     _abort = false;
 
     const videoId = opts.videoId;
+    // tabId is included by the SW so the executor can echo it back in the result.
+    // Without it, the SW's onWatchDone can't tell which tab finished.
+    const tabId = opts.tabId;
     const doLike = !!opts.like;
     const doComment = !!opts.comment;
     const commentText = opts.commentText || '';
@@ -388,10 +391,10 @@
       }
 
       console.log(`[nuoi-yt] executor: done ${videoId}`);
-      return { ok: true, videoId, title };
+      return { ok: true, videoId, tabId, title };
     } catch (e) {
       console.error('[nuoi-yt] executor err', e);
-      return { ok: false, reason: e.message };
+      return { ok: false, videoId, tabId, reason: e.message };
     } finally {
       _busy = false;
     }

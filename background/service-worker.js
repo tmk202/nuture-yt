@@ -457,7 +457,7 @@ async function openAndWatch(videoId, opts) {
       chrome.tabs.onUpdated.removeListener(listener);
       // Small delay cho content script setup
       setTimeout(() => {
-        chrome.tabs.sendMessage(tab.id, { type: 'WATCH', videoId, ...opts }).catch((e) => {
+        chrome.tabs.sendMessage(tab.id, { type: 'WATCH', tabId: tab.id, videoId, ...opts }).catch((e) => {
           logActivity('error', `sendMessage WATCH failed: ${e.message}`, { videoId, tabId: tab.id }, 'error');
           console.warn('[nuoi-yt] sendMessage err', e.message);
         });
@@ -469,15 +469,24 @@ async function openAndWatch(videoId, opts) {
 async function onWatchDone(result) {
   console.log('[nuoi-yt] WATCH_DONE', result);
 
-  // result.videoId identifies which watch finished, but we don't have tabId in the result.
-  // Use a heuristic: find the most recent active watch.
-  // Better: pass tabId in the WATCH_DONE message. For now, find the first active watch whose
-  // videoId matches (or fall back to the only active watch).
+  // Identify the correct tab to close. Priority:
+  //   1. tabId in the result (set by executor from the WATCH message)
+  //   2. videoId match in _activeWatches
+  //   3. Only one active watch → use it
+  //   4. Fallback: first key in _activeWatches
   let targetTabId = null;
-  if (result.videoId && _activeWatches.size > 0) {
-    // No per-tab videoId map kept, so pick the oldest active watch (most likely the one that finished).
-    // Better fix: include tabId in the message. For now, pick the first.
-    targetTabId = _activeWatches.keys().next().value;
+  if (result.tabId && _activeWatches.has(result.tabId)) {
+    targetTabId = result.tabId;
+  } else if (result.videoId && _activeWatches.size > 0) {
+    for (const [tid, entry] of _activeWatches.entries()) {
+      if (entry.videoId === result.videoId) {
+        targetTabId = tid;
+        break;
+      }
+    }
+    if (!targetTabId && _activeWatches.size === 1) {
+      targetTabId = _activeWatches.keys().next().value;
+    }
   } else if (_activeWatches.size === 1) {
     targetTabId = _activeWatches.keys().next().value;
   }
