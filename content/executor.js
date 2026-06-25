@@ -34,6 +34,97 @@
    * Returns true if an ad was detected (and either skipped or fast-forwarded).
    */
   let _lastAdHandledAt = 0;
+
+  /**
+   * Try to start video playback using progressively more aggressive
+   * techniques. YouTube's autoplay policy requires a user gesture for
+   * media with sound. Since the watch tab is opened with active:true,
+   * the page has user-gesture context, but in some edge cases (e.g.
+   * navigation within an SPA, or focus changes), the policy can
+   * still block play(). We try:
+   *   1. Click the big center overlay play button (most reliable)
+   *   2. Click the small control-bar play button
+   *   3. Dispatch a click on the <video> element itself + call play()
+   *   4. Just call play() (might fail silently)
+   *   5. Mousedown+mouseup+click events on the video (simulates user)
+   * If `aggressive` is true, also force-enable autoplay by setting the
+   * video element's muted attribute briefly (browsers allow muted autoplay).
+   *
+   * Returns true if the video is playing after the attempt, false otherwise.
+   */
+  let _lastPlayAttempt = 0;
+  async function tryStartPlayback(video, aggressive = false) {
+    if (!video) return false;
+    // Throttle to once per 2s
+    if (Date.now() - _lastPlayAttempt < 2000) return !video.paused;
+    _lastPlayAttempt = Date.now();
+
+    if (!video.paused) {
+      return true; // already playing
+    }
+
+    const attempts = [];
+
+    // 1. Big center overlay play button
+    const bigPlay = document.querySelector('.ytp-large-play-button, button.ytp-large-play-button');
+    if (bigPlay && bigPlay.offsetParent !== null) {
+      attempts.push(() => {
+        bigPlay.click();
+        return 'clicked .ytp-large-play-button';
+      });
+    }
+
+    // 2. Small control-bar play button
+    const smallPlay = document.querySelector('.ytp-play-button, button.ytp-play-button');
+    if (smallPlay && smallPlay.offsetParent !== null) {
+      attempts.push(() => {
+        smallPlay.click();
+        return 'clicked .ytp-play-button';
+      });
+    }
+
+    // 3. Dispatch a synthetic mousedown+mouseup+click on the video element.
+    //    This counts as a user gesture and unlocks programmatic play().
+    attempts.push(() => {
+      try {
+        const rect = video.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const opts = { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true, view: window };
+        video.dispatchEvent(new MouseEvent('mousedown', opts));
+        video.dispatchEvent(new MouseEvent('mouseup', opts));
+        video.dispatchEvent(new MouseEvent('click', opts));
+      } catch (e) { /* ignore */ }
+      // Then try play()
+      return video.play().then(() => 'clicked video + play()').catch((e) => `play() rejected: ${e.message}`);
+    });
+
+    // 4. Just call play() (will fail silently if blocked)
+    attempts.push(() => {
+      return video.play().then(() => 'play()').catch((e) => `play() rejected: ${e.message}`);
+    });
+
+    // 5. Aggressive: temporarily mute to allow autoplay
+    if (aggressive) {
+      attempts.push(() => {
+        video.muted = true;
+        return video.play().then(() => 'muted + play()').catch((e) => `play() rejected: ${e.message}`);
+      });
+    }
+
+    // Try each attempt
+    for (const attempt of attempts) {
+      const label = await attempt();
+      await Human.sleep(300);
+      if (!video.paused) {
+        console.log(`[nuoi-yt] play: ${label} → playing (${video.currentTime.toFixed(1)}s)`);
+        return true;
+      }
+    }
+    console.warn(`[nuoi-yt] play: still paused after ${attempts.length} attempts`);
+    return false;
+  }
+
   function handleYouTubeAd() {
     try {
       // Throttle: don't re-handle the same ad more than once per 500ms
@@ -184,49 +275,24 @@
 
       console.log(`[nuoi-yt] executor: "${title.slice(0, 60)}" by ${channelName}, ${duration}s`);
 
-      // 5. Ensure video is playing. YouTube's autoplay policy blocks video.play() without a user gesture,
-      // so we click the visible play button(s) instead. Order: large center overlay → control-bar play → fallback video.play().
+      // 5. Ensure video is playing. YouTube's autoplay policy requires a user
+      // gesture. We rely on the fact that the watch tab is opened in the
+      // foreground (active: true in openAndWatch), so the page has user-gesture
+      // context. We try the visible play buttons first, then dispatch a click
+      // directly on the <video> element to mimic a user click on the player,
+      // then call play() programmatically.
       const player = document.querySelector('#movie_player, video');
       if (player) {
         try {
-          // Tat autoplay next neu co
+          // Disable autoplay-next so the watch ends cleanly when video ends
           const autoBtn = document.querySelector('button[aria-label*="Autoplay" i]');
           if (autoBtn && autoBtn.getAttribute('aria-pressed') === 'true') {
             autoBtn.click();
             await Human.sleep(Human.humanDelay(500, 1000));
           }
           const video = document.querySelector('video');
-          if (video && video.paused) {
-            // 1. Try the big center overlay play button (most reliable for fresh page loads)
-            const bigPlay = document.querySelector('.ytp-large-play-button, button.ytp-large-play-button');
-            if (bigPlay) {
-              bigPlay.click();
-              await Human.sleep(500);
-            }
-            // 2. Try the small control-bar play button if still paused
-            if (video.paused) {
-              const smallPlay = document.querySelector('.ytp-play-button, button.ytp-play-button');
-              if (smallPlay) {
-                smallPlay.click();
-                await Human.sleep(500);
-              }
-            }
-            // 3. Final fallback: programmatic play() (often blocked by autoplay policy but try)
-            if (video.paused) {
-              try { await video.play(); } catch (e) { /* autoplay blocked */ }
-            }
-            // 4. Wait briefly + verify it actually started
-            await Human.sleep(800);
-            if (video.paused) {
-              console.warn('[nuoi-yt] executor: video still paused after play attempts — check console');
-              // Try one more aggressive click on the play overlay
-              try {
-                document.querySelector('.ytp-large-play-button')?.click();
-                await Human.sleep(500);
-              } catch (_) {}
-            } else {
-              console.log(`[nuoi-yt] executor: video playing (${video.currentTime.toFixed(1)}s)`);
-            }
+          if (video) {
+            await tryStartPlayback(video, /* aggressive */ false);
           }
         } catch (e) {
           console.warn('[nuoi-yt] executor: play error', e.message);
@@ -248,6 +314,22 @@
         if (_abort) return { ok: false, reason: 'aborted' };
 
         const elapsed = (Date.now() - start) / 1000;
+
+        // Ensure video is still playing. YouTube can pause the video for many
+        // reasons (focus change, ad transitions, etc.) — try to recover so
+        // the watch time actually progresses instead of looping on a paused video.
+        const v = document.querySelector('video');
+        if (v) {
+          // If the video is at/near the end, exit the watch early.
+          if (Number.isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration - 1) {
+            console.log(`[nuoi-yt] watch: video ended at ${v.currentTime.toFixed(1)}s/${v.duration.toFixed(1)}s, exiting`);
+            break;
+          }
+          // Try to resume playback if paused.
+          if (v.paused) {
+            await tryStartPlayback(v, /* aggressive */ true);
+          }
+        }
 
         // Ad skipper: handle YouTube pre-roll / mid-roll video ads
         if (handleYouTubeAd()) {
